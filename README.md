@@ -1,3 +1,9 @@
+# Added to original in this fork
+
+- Added waterfall display for LilyGo T-Dongle-C5's LCD.
+
+<img width="707" height="374" alt="image" src="https://github.com/user-attachments/assets/e7ce6dcb-1874-4a01-bc73-681406299d80" />
+
 # ESP-SDR firmware
 
 <img src="docs/espargos-logo.png" width="40%" align="right" alt="ESPARGOS logo">
