@@ -76,6 +76,27 @@ for ESP-WebSDR. See [streaming build, architecture, and protocol](docs/s31-strea
 
 ![Gqrx displaying an LTE signal at 2.63 GHz, continuously sampled at 40 MSa/s over Ethernet with an ESP32-S31 and SoapyESPSDR.](docs/gqrx-esp-sdr.png)
 
+<a id="c5-lcd"></a>
+
+### **ESP32-C5**: LilyGO T-Dongle-C5 LCD waterfall
+
+Building with `CONFIG_ESP_SDR_LCD=y` draws the spectrum as a waterfall on the
+dongle's 160x80 ST7735 LCD (newest row on top, DC centred, columns keep the
+peak of the bins they cover, colour range auto-follows the noise floor). While a
+host such as the browser viewer streams spectra, the LCD shows the same frames
+at the host's frequency (header tag `WEB`). When no command has arrived for a
+second, the dongle scans on its own (80 MS/s, tag `LCD`) and the **BOOT button**
+toggles the centre between 2442 MHz and 5500 MHz; the host's tuning is restored
+before its next command. Build with:
+
+```sh
+idf.py -DIDF_TARGET=esp32c5 \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32c5;sdkconfig.defaults.esp32c5-tdongle-lcd" build
+```
+
+The option claims GPIO0/1/2/3/6/10 (LCD) and GPIO28 (button), so keep it off for
+other ESP32-C5 boards. It is not part of the released firmware profiles.
+
 <a id="s3-streaming"></a>
 
 ### **ESP32-S3**: Continuous I/Q streaming over USB

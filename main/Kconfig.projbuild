@@ -54,4 +54,15 @@ menu "ESP-SDR transport"
         default 12 if IDF_TARGET_ESP32C5
         default 44
 
+    config ESP_SDR_LCD
+        bool "LilyGO T-Dongle-C5 LCD waterfall"
+        depends on IDF_TARGET_ESP32C5
+        default n
+        help
+            Show the spectrum as a waterfall on the T-Dongle-C5's 160x80 ST7735
+            LCD (GPIO0/1/2/3/6/10) and use the BOOT button (GPIO28) to switch
+            the standalone scan between 2442 and 5500 MHz. While a host streams
+            spectra, the LCD follows the host's frequency instead. Leave
+            disabled on other ESP32-C5 boards.
+
 endmenu

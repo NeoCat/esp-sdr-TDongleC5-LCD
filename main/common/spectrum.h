@@ -18,3 +18,14 @@ typedef struct {
     uint8_t *frame;
 } spectrum_workspace_t;
 spectrum_workspace_t spectrum_workspace(void);
+
+/* Optional observer of each completed SPEC frame (power codes in natural FFT
+ * order, valid only during the call). Runs on the capture task: keep it short. */
+typedef void (*spectrum_sink_fn)(const uint8_t *codes, unsigned bins, unsigned rate_hz,
+                                 unsigned frequency_mhz);
+void spectrum_set_sink(spectrum_sink_fn sink);
+
+/* One local spectrum without any transport: averages `averages` FFTs and writes
+ * `bins` power codes in natural FFT order to out. Must not overlap spectrum_command. */
+bool spectrum_local(unsigned rate, unsigned bins, unsigned averages,
+                    spectrum_acquire_fn acquire, uint8_t *out, unsigned *rate_hz);

@@ -1,0 +1,15 @@
+# Append to the ESP32-C5 defaults for the LilyGO T-Dongle-C5 (LCD + BOOT button):
+#   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32c5;sdkconfig.defaults.esp32c5-tdongle-lcd"
+CONFIG_ESP_SDR_LCD=y
+
+# The C5 RF dump bank at 0x40820000 caps IRAM+data+BSS (see sram_guard.ld) and
+# the base firmware has under 1 KB to spare. Keep the SPI master/GDMA driver
+# code in flash; the LCD is not latency critical.
+# CONFIG_SPI_MASTER_ISR_IN_IRAM is not set
+# CONFIG_SPI_SLAVE_ISR_IN_IRAM is not set
+# CONFIG_GDMA_CTRL_FUNC_IN_IRAM is not set
+# CONFIG_GDMA_ISR_HANDLER_IN_IRAM is not set
+# esp_cache_msync() (needed by SPI DMA) still adds ~1 KB of IRAM. Recover ~3 KB
+# by keeping the ring buffer ISR helpers in flash: the UART/USB drivers' ISRs
+# here are not IRAM ISRs, so they never run with the flash cache disabled.
+CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y

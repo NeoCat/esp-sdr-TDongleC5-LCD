@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
 #include "esp_cpu.h"
@@ -33,6 +34,9 @@
 #endif
 #include "rx_tuning.h"
 #include "rx_recalibration.h"
+#if CONFIG_ESP_SDR_LCD
+#include "lcd.h"
+#endif
 extern void phy_stop_tx_tone(unsigned);
 extern void phy_pbus_workmode(void);
 extern void phy_pbus_xpd_rx_on(unsigned);
@@ -146,6 +150,9 @@ extern unsigned phy_chip_i2c_readReg(unsigned,unsigned,unsigned);
 extern void phy_i2c_writeReg(unsigned,unsigned,unsigned,unsigned);
 static bool probe_capture;
 #endif
+/* Standalone LCD scans have no host waiting for an error reply. */
+static bool quiet_errors;
+static void capture_error(const char *s) { if(!quiet_errors)reply(s); }
 static bool acquire_iq(unsigned n,unsigned divider,unsigned *capture_us) {
     prepare_rx();
     
@@ -187,12 +194,12 @@ static bool acquire_iq(unsigned n,unsigned divider,unsigned *capture_us) {
 #endif
     REG_WRITE(SRAM_OWNER_REG,owner);
     rx_analog_restore(analog_saved);
-    if(!done){reply("ERR capture_timeout\n");return false;}
+    if(!done){capture_error("ERR capture_timeout\n");return false;}
     for(unsigned j=0;j<n;j++) {
-        if(IQ_BUFFER[j]==0xa5a0055au){reply("ERR capture_timeout\n");return false;}
+        if(IQ_BUFFER[j]==0xa5a0055au){capture_error("ERR capture_timeout\n");return false;}
     }
     for(unsigned j=0;j<4;j++) {
-        if(IQ_BUFFER[n+j]!=(0x5a5aa5a5u^j)){reply("ERR capture_overrun\n");return false;}
+        if(IQ_BUFFER[n+j]!=(0x5a5aa5a5u^j)){capture_error("ERR capture_overrun\n");return false;}
     }
     *capture_us = elapsed;
     return true;
@@ -247,6 +254,38 @@ static bool ring_test(const char *line) {
 
 static void handle_command(char *line);
 
+#if CONFIG_ESP_SDR_LCD
+/* Standalone scan: 80 MS/s, 512 bins (156 kHz) averaged over 16 FFTs, ~20 rows/s.
+ * The host's tuning is restored before its next command. */
+#define LCD_RATE 0
+#define LCD_BINS 512
+#define LCD_AVERAGES 16
+#define LCD_IDLE_US 1000000
+static unsigned host_mhz=2412;
+static bool lcd_tuned;
+static void lcd_host_sink(const uint8_t *codes,unsigned bins,unsigned rate_hz,unsigned mhz) {
+    lcd_push(codes,bins,rate_hz,mhz,LCD_SOURCE_HOST);
+}
+static void lcd_restore_host(void) {
+    if(!lcd_tuned)return;
+    lcd_tuned=false;
+    if(frequency_mhz!=host_mhz){frequency_mhz=host_mhz;rx_ready=false;}
+}
+static void lcd_scan_step(void) {
+    /* Heap, not .bss: the C5 RF dump bank caps static sections (sram_guard.ld). */
+    static uint8_t *codes;
+    if(!codes && !(codes=malloc(LCD_BINS))){vTaskDelay(pdMS_TO_TICKS(100));return;}
+    unsigned mhz=lcd_button_frequency(),rate_hz;
+    if(frequency_mhz!=mhz){frequency_mhz=mhz;rx_ready=false;}
+    lcd_tuned=true;
+    quiet_errors=true;
+    bool ok=spectrum_local(LCD_RATE,LCD_BINS,LCD_AVERAGES,spectrum_acquire,codes,&rate_hz);
+    quiet_errors=false;
+    if(ok)lcd_push(codes,LCD_BINS,rate_hz,mhz,LCD_SOURCE_LOCAL);
+    vTaskDelay(pdMS_TO_TICKS(20)); /* pace the waterfall; lets the LCD task run */
+}
+#endif
+
 void app_main(void) {
 
     esp_log_level_set("*",ESP_LOG_NONE);
@@ -269,21 +308,45 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
     ESP_ERROR_CHECK(esp_wifi_set_channel(1,WIFI_SECOND_CHAN_NONE));
+#if CONFIG_ESP_SDR_LCD
+    /* Same as "BANDWIDTH 0" (analog bandwidth open): the PHY-calibrated default
+     * leaves the centre of the LCD waterfall saturated with hardware AGC. */
+    rx_channel_mode=rx_bandwidth_phy_mode(0);
+    rx_analog_filter=rx_bandwidth_dcap(0);
+#endif
     prepare_rx();
     esp_log_level_set("*",ESP_LOG_NONE);
     (void)usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
     ESP_ERROR_CHECK(usb_serial_jtag_driver_uninstall());
+#if CONFIG_ESP_SDR_LCD
+    /* Before the GPIO service starts, so it never offers the LCD pins. */
+    bool lcd_ok=lcd_init();
+    if(lcd_ok)spectrum_set_sink(lcd_host_sink);
+    int64_t last_command_us=esp_timer_get_time();
+#endif
     burst_serial_init();
     char line[128];int owner=-1;int64_t lease_deadline=0;
     for(;;) {
         if(esp_timer_get_time()>=lease_deadline)owner=-1;
         int status=burst_serial_poll_line(line,sizeof(line));
-        if(!status){vTaskDelay(1);continue;}
+        if(!status){
+#if CONFIG_ESP_SDR_LCD
+            if(lcd_ok && esp_timer_get_time()-last_command_us>LCD_IDLE_US){lcd_scan_step();continue;}
+#endif
+            vTaskDelay(1);continue;
+        }
+#if CONFIG_ESP_SDR_LCD
+        lcd_restore_host();
+#endif
         int port=burst_serial_port();
         if(owner>=0 && owner!=port){reply("ERR busy\n");continue;}
         if(status<0){reply("ERR command_length\n");continue;}
         owner=port;
         handle_command(line);
+#if CONFIG_ESP_SDR_LCD
+        host_mhz=frequency_mhz;
+        last_command_us=esp_timer_get_time();
+#endif
         if(!strcmp(line,"RELEASE"))owner=-1;
         lease_deadline=esp_timer_get_time()+5000000;
     }

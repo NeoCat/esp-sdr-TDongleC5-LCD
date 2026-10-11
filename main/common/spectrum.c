@@ -59,6 +59,8 @@ static const unsigned rates[] = {
 static unsigned rate_hz(unsigned code) {
     return code < sizeof(rates)/sizeof(rates[0]) ? rates[code] : 0;
 }
+static spectrum_sink_fn sink;
+void spectrum_set_sink(spectrum_sink_fn fn) { sink=fn; }
 static bool send_text(const char *s) { return burst_serial_send(s, strlen(s)); }
 static void put16(unsigned at, uint16_t v) { frame[at]=v; frame[at+1]=v>>8; }
 static void put32(unsigned at, uint32_t v) { put16(at,v); put16(at+2,v>>16); }
@@ -120,6 +122,43 @@ static size_t pack_spectrum(unsigned n,unsigned log2n,unsigned det,unsigned merg
     return HEADER_BYTES+n+4;
 }
 
+static void noop_poll(void *context) { (void)context; }
+
+bool spectrum_local(unsigned rate,unsigned n,unsigned averages,spectrum_acquire_fn acquire,
+                    uint8_t *out,unsigned *rate_out) {
+    if(!rate_hz(rate) || n<256 || n>MAX_FFT || (n&(n-1)) || !averages || averages>1024) return false;
+    spectrum_fft_init();
+    if(!ready) return false;
+    if(setup_n!=n) {
+        for(unsigned j=0;j<n;j++) window[j]=(int16_t)lrintf(16383.5f*(1-cosf(2*M_PI*j/n)));
+        setup_n=n;
+    }
+    memset(&powers,0,n*sizeof(float));
+    spectrum_dc_t dc={0};
+    for(unsigned a=0;a<averages;a++) {
+        const uint32_t *words;unsigned elapsed;
+        if(!acquire(n,rate,&words,&elapsed)) return false;
+        for(unsigned j=0;j<n;j++){
+            int32_t i=((int32_t)(words[j]<<22)>>22),q=((int32_t)(words[j]<<12)>>22);
+            fft_data[2*j]=clamp16((i*window[j])>>9);
+            fft_data[2*j+1]=clamp16((q*window[j])>>9);
+        }
+        spectrum_fft_poll(fft_data,n,dsps_fft_w_table_sc16,noop_poll,NULL);
+        spectrum_dc_apply(&dc,fft_data,n);
+        for(unsigned j=0;j<n;j++) powers.mean[j]+=(float)spectrum_complex_power(fft_data[2*j],fft_data[2*j+1]);
+    }
+    /* The FFT output is bit-reversed; walk it in natural order as pack_spectrum does. */
+    const float scale=1.0f/averages;
+    for(unsigned j=0,bin=0;j<n;j++) {
+        out[bin]=spectrum_mean_power_code(powers.mean[j]*scale);
+        unsigned bit=n>>1;
+        while(bin&bit){bin^=bit;bit>>=1;}
+        bin^=bit;
+    }
+    *rate_out=rate_hz(rate);
+    return true;
+}
+
 bool spectrum_command(const char *line, unsigned frequency_mhz, spectrum_acquire_fn acquire) {
     unsigned dc_mode;char dc_extra;
     if(!strcmp(line,"DC?")){char text[16];snprintf(text,sizeof(text),"DC %u\n",spectrum_dc_mode);send_text(text);return true;}
@@ -174,6 +213,7 @@ bool spectrum_command(const char *line, unsigned frequency_mhz, spectrum_acquire
         if(!out.pending){
             if(stats)spectrum_stats_emit(&telemetry,n,rate_hz(rate),ffts,0,0,0,0,burst_serial_send);
             out.pending=pack_spectrum(n,log2n,det,merged,frames,index,gain);merged=0;
+            if(sink)sink(frame+HEADER_BYTES,n,rate_hz(rate),frequency_mhz);
             out.progress=esp_timer_get_time();pump_spectrum(&out);
         }
         telemetry.busy+=(uint32_t)(esp_cpu_get_cycle_count()-busy_start);
@@ -187,6 +227,7 @@ bool spectrum_command(const char *line, unsigned frequency_mhz, spectrum_acquire
     }
     if(!status && merged){
         size_t size=pack_spectrum(n,log2n,det,merged,frames,index,gain);
+        if(sink)sink(frame+HEADER_BYTES,n,rate_hz(rate),frequency_mhz);
         if(burst_serial_send(frame,size))frames++;
         else status=7;
     }
